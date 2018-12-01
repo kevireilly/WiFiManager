@@ -233,36 +233,10 @@ boolean  WiFiManager::startConfigPortal(char const *apName, char const *apPasswo
     //HTTP
     server->handleClient();
 
-
-    if (connect) {
-      connect = false;
-      delay(2000);
-      DEBUG_WM(F("Connecting to new AP"));
-
-      // using user-provided  _ssid, _pass in place of system-stored ssid and pass
-      if (connectWifi(_ssid, _pass) != WL_CONNECTED) {
-        DEBUG_WM(F("Failed to connect."));
-      } else {
-        //connected
-        WiFi.mode(WIFI_STA);
-        //notify that configuration has changed and any optional parameters should be saved
-        if ( _savecallback != NULL) {
-          //todo: check if any custom parameters actually exist, and check if they really changed maybe
-          _savecallback();
-        }
-        break;
-      }
-
-      if (_shouldBreakAfterConfig) {
-        //flag set to exit after config after trying to connect
-        //notify that configuration has changed and any optional parameters should be saved
-        if ( _savecallback != NULL) {
-          //todo: check if any custom parameters actually exist, and check if they really changed maybe
-          _savecallback();
-        }
-        break;
-      }
+    if (attemptConnection()) {
+      break;
     }
+
     yield();
   }
 
@@ -272,6 +246,56 @@ boolean  WiFiManager::startConfigPortal(char const *apName, char const *apPasswo
   return  WiFi.status() == WL_CONNECTED;
 }
 
+boolean WiFiManager::attemptConnection() {
+  if (connect) {
+    connect = false;
+    delay(2000);
+    DEBUG_WM(F("Connecting to new AP"));
+
+    // using user-provided  _ssid, _pass in place of system-stored ssid and pass
+    if (connectWifi(_ssid, _pass) != WL_CONNECTED) {
+      DEBUG_WM(F("Failed to connect."));
+    } else {
+      //connected
+      WiFi.mode(WIFI_STA);
+
+      // Optionally redirect the user to a specific URL to make remote configurations,
+      // sign up for an account, or otherwise. The device needs to poll a separate URL
+      // to know when configuration is complete and optionally retrieve additional data.
+      if (_postConfigPage != "") {
+        DEBUG_WM(F("Redirecting to post config page"));
+        captivePortalEnabled(false);
+        // server.reset();
+        dnsServer.reset();
+        delay(1000);
+        server->sendHeader("Location", String(_postConfigPage), true);
+        server->send(302, "text/plain", "");
+        server->client().stop(); // Stop is needed because we sent no content length
+      } else {
+        if ( _savecallback != NULL) {
+          DEBUG_WM(F("Calling save callback"));
+          //notify that configuration has changed and any optional parameters should be saved
+          //todo: check if any custom parameters actually exist, and check if they really changed maybe
+          _savecallback();
+        }
+        return true;
+      }
+    }
+
+    if (_shouldBreakAfterConfig) {
+      DEBUG_WM(F("Breaking after config"));
+      //flag set to exit after config after trying to connect
+      //notify that configuration has changed and any optional parameters should be saved
+      if ( _savecallback != NULL) {
+        DEBUG_WM(F("Calling save callback"));
+        //todo: check if any custom parameters actually exist, and check if they really changed maybe
+        _savecallback();
+      }
+      return true;
+    }
+  }
+  return false;
+}
 
 int WiFiManager::connectWifi(String ssid, String pass) {
   DEBUG_WM(F("Connecting as wifi client..."));
@@ -596,6 +620,10 @@ void WiFiManager::handleWifi(boolean scan) {
 
 /** Handle the WLAN save form and redirect to WLAN config page again */
 void WiFiManager::handleWifiSave() {
+  // if (captivePortal()) { // If caprive portal redirect instead of displaying the page.
+  //   return;
+  // }
+
   DEBUG_WM(F("WiFi save"));
 
   //SAVE/connect here
@@ -636,21 +664,35 @@ void WiFiManager::handleWifiSave() {
     optionalIPFromString(&_sta_static_sn, sn.c_str());
   }
 
-  String page = FPSTR(HTTP_HEAD);
-  page.replace("{v}", "Credentials Saved");
-  page += FPSTR(HTTP_SCRIPT);
-  page += FPSTR(HTTP_STYLE);
-  page += _customHeadElement;
-  page += FPSTR(HTTP_HEAD_END);
-  page += FPSTR(HTTP_SAVED);
-  page += FPSTR(HTTP_END);
+  if (_postConfigPage != "") {
+    connect = true;
+    attemptConnection();
+  } else {
+    String page = FPSTR(HTTP_HEAD);
+    page.replace("{v}", "Credentials Saved");
+    page += FPSTR(HTTP_SCRIPT);
+    page += FPSTR(HTTP_STYLE);
+    page += _customHeadElement;
+    page += FPSTR(HTTP_HEAD_END);
+    // if (_postConfigPage != "") {
+    //   DEBUG_WM(F("Redirecting user to post config page soon"));
 
-  server->sendHeader("Content-Length", String(page.length()));
-  server->send(200, "text/html", page);
+    //   String item = FPSTR(HTTP_SAVED_REDIRECT);
+    //   item.replace("{url}", String(_postConfigPage));
+    //   item.replace("{delay}", "1000"); // Delay before redirection
 
-  DEBUG_WM(F("Sent wifi save page"));
+    //   page += item;
+    // }
+    page += FPSTR(HTTP_SAVED);
+    page += FPSTR(HTTP_END);
 
-  connect = true; //signal ready to connect/reset
+    server->sendHeader("Content-Length", String(page.length()));
+    server->send(200, "text/html", page);
+
+    DEBUG_WM(F("Sent wifi save page"));
+
+    connect = true; //signal ready to connect/reset
+  }
 }
 
 /** Handle the info page */
@@ -742,14 +784,35 @@ void WiFiManager::handleNotFound() {
 
 /** Redirect to captive portal if we got a request for another domain. Return true in that case so the page handler do not try to handle the request again. */
 boolean WiFiManager::captivePortal() {
+  if (!_captivePortalEnabled) {
+    DEBUG_WM(F("Captive portal manually disabled"));
+    if (_postConfigPage != "") {
+      DEBUG_WM(F("Yay?"));
+      DEBUG_WM(String(_postConfigPage));
+      DEBUG_WM(toStringIp(server->client().localIP()));
+      DEBUG_WM(String(server->hostHeader()));
+      // captivePortalEnabled(false);
+      server->sendHeader("Location", String(_postConfigPage), true);
+      server->send(302, "text/plain", "");
+      server->client().stop(); // Stop is needed because we sent no content length
+    }
+    return false;
+  }
+
   if (!isIp(server->hostHeader()) ) {
     DEBUG_WM(F("Request redirected to captive portal"));
     server->sendHeader("Location", String("http://") + toStringIp(server->client().localIP()), true);
     server->send ( 302, "text/plain", ""); // Empty content inhibits Content-length header so we have to close the socket ourselves.
     server->client().stop(); // Stop is needed because we sent no content length
     return true;
+  } else {
+    DEBUG_WM(F("*** Request allowed ***"));
+    return false;
   }
-  return false;
+}
+
+void WiFiManager::captivePortalEnabled(bool enabled) {
+  _captivePortalEnabled = enabled;
 }
 
 //start up config portal callback
@@ -760,6 +823,16 @@ void WiFiManager::setAPCallback( void (*func)(WiFiManager* myWiFiManager) ) {
 //start up save config callback
 void WiFiManager::setSaveConfigCallback( void (*func)(void) ) {
   _savecallback = func;
+}
+
+//start up save config callback
+void WiFiManager::setPostConfigPage(String URL) {
+  _postConfigPage = URL;
+}
+
+//start up save config callback
+void WiFiManager::setPostConfigComplete(String URL) {
+  _postConfigComplete = URL;
 }
 
 //sets a custom element to add to head, like a new style tag

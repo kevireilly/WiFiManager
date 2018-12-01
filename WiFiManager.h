@@ -33,6 +33,7 @@ const char HTTP_FORM_PARAM[] PROGMEM      = "<br/><input id='{i}' name='{n}' max
 const char HTTP_FORM_END[] PROGMEM        = "<br/><button type='submit'>save</button></form>";
 const char HTTP_SCAN_LINK[] PROGMEM       = "<br/><div class=\"c\"><a href=\"/wifi\">Scan</a></div>";
 const char HTTP_SAVED[] PROGMEM           = "<div>Credentials Saved<br />Trying to connect ESP to network.<br />If it fails reconnect to AP to try again</div>";
+const char HTTP_SAVED_REDIRECT[] PROGMEM  = "<script>setTimeout(function(){window.location.replace('{url}');}, {delay});</script>";
 const char HTTP_END[] PROGMEM             = "</div></body></html>";
 
 #ifndef WIFI_MANAGER_MAX_PARAMS
@@ -80,6 +81,7 @@ class WiFiManager
     //if you want to always start the config portal, without trying to connect first
     boolean       startConfigPortal();
     boolean       startConfigPortal(char const *apName, char const *apPassword = NULL);
+    boolean          attemptConnection();
 
     // get the AP name of the config portal, so it can be used in the callback
     String        getConfigPortalSSID();
@@ -107,6 +109,10 @@ class WiFiManager
     void          setAPCallback( void (*func)(WiFiManager*) );
     //called when settings have been changed and connection was successful
     void          setSaveConfigCallback( void (*func)(void) );
+    // TODO: describe
+    void          setPostConfigPage(String URL);
+    // TODO: describe
+    void          setPostConfigComplete(String URL);
     //adds a custom parameter, returns false on failure
     bool          addParameter(WiFiManagerParameter *p);
     //if this is set, it will exit after config, even if connection is unsuccessful.
@@ -168,6 +174,7 @@ class WiFiManager
     void          handleNotFound();
     void          handle204();
     boolean       captivePortal();
+    void          captivePortalEnabled(bool enabled);
     boolean       configPortalHasTimeout();
 
     // DNS server
@@ -183,6 +190,10 @@ class WiFiManager
 
     void (*_apcallback)(WiFiManager*) = NULL;
     void (*_savecallback)(void) = NULL;
+
+    String        _postConfigPage = "";
+    String        _postConfigComplete = "";
+    boolean       _captivePortalEnabled = true;
 
     int                    _max_params;
     WiFiManagerParameter** _params;
